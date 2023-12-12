@@ -1,0 +1,99 @@
+def img
+
+pipeline {
+    environment {
+        registry = "navjotrai/calculator-repository"
+        dockerImage = ''
+    }
+    agent any
+    stages {
+        stage("build checkout") {
+            steps {
+                git "https://github.com/Navjot3630/calculator.git"
+            }
+        }   
+        stage("Sonar Qube testing"){
+            steps {
+                script{
+                withSonarQubeEnv('SonarServer') {
+                        def scannerHome = tool 'sonar-scanner'
+                        withEnv(["PATH+SONARQUBE_SCANNER=${scannerHome}/bin"]) {
+                            sh """
+                                ${scannerHome}/bin/sonar-scanner \
+                                -Dsonar.projectKey=calculator-testing \
+                                -Dsonar.host.url=http://20.200.121.5:9000 \
+                                -Dsonar.login=sqp_34c27a552f643d55fb5bcb2db583262c95fab433
+                      
+                            """                       
+                        }    
+                    }   
+                }  
+            }
+        }
+
+        stage("Build Image") {
+            steps {
+                sh returnStatus: true, script: 'docker rmi $(docker images | grep ${registry} | awk \' {print $3}\') --force'
+                script {
+                        img = "${registry}:${env.BUILD_ID}"
+                        println("${img}")
+                        dockerImage = docker.build(img)
+                    
+                }
+            }
+        }
+        stage("Docker Login and pushing image to Dockerhub") {
+            steps {
+                script{
+                withCredentials([usernamePassword(credentialsId: 'dockerhubpwd', usernameVariable: 'DOCKERHUB_USERNAME', passwordVariable: 'DOCKERHUB_PASSWORD')]) {
+                    sh "docker login -u \$DOCKERHUB_USERNAME -p \$DOCKERHUB_PASSWORD"
+                    dockerImage.push()
+                   }
+
+                }   
+            }
+        }
+
+        
+        stage("Running container on staging environment") {
+            steps {
+                script{
+                    def stopcon = "docker stop ${JOB_NAME}"
+                    def delcon = "docker rm -f ${JOB_NAME}"
+                    def delimage = "docker image prune -a --force"
+                    def dockrun = "docker run -d --name ${JOB_NAME} -p 5000:5000 ${img}"
+                    sshagent(['staging-login']) {
+                        sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no ubuntu@18.206.175.204 ${stopcon}"
+                        sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no ubuntu@18.206.175.204 ${delcon}"
+                        sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no ubuntu@18.206.175.204 ${delimage}"
+                        sh "ssh -o StrictHostKeyChecking=no ubuntu@18.206.175.204 ${dockrun}"
+                     
+                    }
+                }    
+               
+            }
+        }
+        stage ("Deploying to the Production"){
+            steps{
+                script{
+                    def stopcon = "docker stop ${JOB_NAME}"
+                    def delcon = "docker rm -f ${JOB_NAME}"
+                    def delimage = "docker image prune -a --force"
+                    def pullImage = "docker pull ${img}"
+                    def dockrun = "docker run -d --name ${JOB_NAME} -p 80:5000 ${img}"
+                    sshagent(['prod-login']) {
+                        sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no ubuntu@3.16.130.241 ${stopcon}"
+                        sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no ubuntu@3.16.130.241 ${delcon}"
+                        sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no ubuntu@3.16.130.241 ${delimage}"
+                        sh returnStatus: true, script: "ssh -o StrictHostKeyChecking=no ubuntu@3.16.130.241 ${pullImage}"
+                        
+                        sh "ssh -o StrictHostKeyChecking=no ubuntu@3.16.130.241 ${dockrun}"
+                     
+                    }
+                }
+            }
+            
+        }
+    
+    }
+}
